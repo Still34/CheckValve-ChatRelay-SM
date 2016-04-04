@@ -17,3 +17,4 @@ If you have SourceMod and use CheckValve app often, it's almost a must to get.
 # Known issues
 1. Team names are based off of TF2 for now. Even for non-TF2 games it'll still show `RED, BLU, Spectators...etc`.
 2. Content Length of sent chat data is fixed to 230. It's a temprorary workaround.
+3. `CRUCIAL` - When the client disconnects unexpectedly, socket extension spams the console with callback error 1. I'm not sure what's casuing it yet.
