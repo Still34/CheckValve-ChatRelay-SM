@@ -4,12 +4,13 @@
 */
 
 #include <sourcemod>
+#include <sdktools>
 #include <socket>
 #include <bytebuffer>
 #include <SteamWorks>
 #include <smlib>
 #define PLUGIN_AUTHOR "Still / 341464"
-#define PLUGIN_VERSION "1.0.1rel"
+#define PLUGIN_VERSION "1.0.2rel"
 #define DEBUG 
 
 #define PTYPE_IDENTITY_STRING 0x00
@@ -191,6 +192,7 @@ public OnChildSocketReceive(Handle socket, char[] receiveData, const int dataSiz
 
 	out_size = status.Dump(out,sizeof(out));
 	SocketSend(socket, out, out_size);
+	status.Close();
 	if (err)
 	{
 		int index = FindValueInArray(ARRAY_Connections, socket);
@@ -204,67 +206,34 @@ public OnChildSocketReceive(Handle socket, char[] receiveData, const int dataSiz
 	}
 }
 
+public void OnClientConnected(int client)
+{
+	if (GetArraySize(ARRAY_Connections) != 0)
+	{
+		char steamID[16];
+		SteamWorks_GetClientSteamID(client, steamID, sizeof(steamID));
+		ForwardToClient(_, _, client, "Connection", "has joined the game.");
+	}
+}
+
+public void OnClientDisconnect(int client)
+{
+	if (GetArraySize(ARRAY_Connections) != 0)
+	{
+		char steamID[16];
+		SteamWorks_GetClientSteamID(client, steamID, sizeof(steamID));
+		ForwardToClient(_, _, client, "Disconnection", "has left the game.");
+	}
+}
+
 public void OnClientSayCommand_Post(int client, const char[] command, const char[] sArgs)
 {
 	if (GetArraySize(ARRAY_Connections) != 0)
 	{
-		//PrintToServer("Total number of %i clients are connected. Forwarding...", GetArraySize(ARRAY_Connections));
-		int teamOrNot = 0x01;
-		if (StrContains(command, "say_team",false)){teamOrNot = 0x00;}
-		char clientName[MAX_NAME_LENGTH];
-		GetClientName(client, clientName, sizeof(clientName));
 		char teamBuffer[16];
-		char timeBuffer[64];
-		int clientTeam = GetClientTeam(client);
-		//Will need to implement a game checker, this is based on TF2 for now.
-		switch(clientTeam)
-		{
-			case 0:
-			{
-				teamBuffer = "Spectator";
-			}
-			case 1:
-			{
-				teamBuffer = "Spectator";
-			}
-			case 2:
-			{
-				teamBuffer = "RED";
-			}
-			case 3:
-			{
-				teamBuffer = "BLU";
-			}
-			default:
-			{
-				teamBuffer = "Unknown";
-			}
-		}
-		for(int i = 0; i < GetArraySize(ARRAY_Connections); i++)
-		{
-			//Get client :
-			Handle clientSocket = GetArrayCell(ARRAY_Connections, i);
-			char clientIP[16];
-			GetArrayString(ARRAY_ConnectionsIP, i, clientIP, sizeof(clientIP));
-			ByteBuffer chat = CreateByteBuffer(true, out, sizeof(out));
-			chat.WriteInt(0xFFFFFFFF);
-			chat.WriteByte(PTYPE_MESSAGE_DATA);
-			chat.WriteShort(230);
-			chat.WriteByte(0x01);
-			chat.WriteInt(GetTime());
-			chat.WriteByte(teamOrNot);
-			//will need to improve on this, client may be looking for public or private ip.
-			//the client will probably reject it if it doesn't match.
-			if (StrEqual(clientIP, getIPInfo(1), false)) {chat.WriteString(getIPInfo(1));} else {chat.WriteString(getIPInfo(0));}
-			chat.WriteString(getIPInfo(2));
-			FormatTime(timeBuffer, sizeof(timeBuffer), "%m/%d/%Y - %H:%M:%S");
-			chat.WriteString(timeBuffer);
-			chat.WriteString(clientName);
-			chat.WriteString(teamBuffer);
-			chat.WriteString(sArgs);
-			out_size = chat.Dump(out,sizeof(out));
-			SocketSend(clientSocket, out, out_size);
-		}
+		int iClientTeam = GetClientTeam(client);
+		GetTeamName(iClientTeam, teamBuffer, sizeof(teamBuffer));
+		ForwardToClient(_, command, client, teamBuffer, sArgs);
 	}
 }
 
@@ -324,4 +293,42 @@ stock void SendIdentity(Handle socket)
 	out_size = ident.Dump(out,sizeof(out));
 	SocketSend(socket, out, out_size);
 	PrintToServer("Sent identity packets, version %s", identity);
+	ident.Close();
+}
+
+
+//short is again, yet to be determined
+stock void ForwardToClient(int short = 230, const char[] command = "", int client, char[] team ,const char[] msg)
+{
+	int teamOrNot = 0x01;
+	if (StrContains(command, "say_team",false)){teamOrNot = 0x00;}
+	char clientName[MAX_NAME_LENGTH];
+	char timeBuffer[64];
+	GetClientName(client, clientName, sizeof(clientName));
+	FormatTime(timeBuffer, sizeof(timeBuffer), "%m/%d/%Y - %H:%M:%S");
+	for(int i = 0; i < GetArraySize(ARRAY_Connections); i++)
+	{
+		//Get client :
+		Handle clientSocket = GetArrayCell(ARRAY_Connections, i);
+		char clientIP[16];
+		GetArrayString(ARRAY_ConnectionsIP, i, clientIP, sizeof(clientIP));
+		ByteBuffer chat = CreateByteBuffer(true, out, sizeof(out));
+		chat.WriteInt(0xFFFFFFFF);
+		chat.WriteByte(PTYPE_MESSAGE_DATA);
+		chat.WriteShort(short);
+		chat.WriteByte(0x01);
+		chat.WriteInt(GetTime());
+		chat.WriteByte(teamOrNot);
+		//will need to improve on this, client may be looking for public or private ip.
+		//the client will probably reject it if it doesn't match.
+		if (StrEqual(clientIP, getIPInfo(1), false)) {chat.WriteString(getIPInfo(1));} else {chat.WriteString(getIPInfo(0));}
+		chat.WriteString(getIPInfo(2));
+		chat.WriteString(timeBuffer);
+		chat.WriteString(clientName);
+		chat.WriteString(team);
+		chat.WriteString(msg);
+		out_size = chat.Dump(out,sizeof(out));
+		SocketSend(clientSocket, out, out_size);
+		chat.Close();
+	}
 }
