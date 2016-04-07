@@ -3,6 +3,24 @@
 	Written in 1.7 SM Syntax
 */
 
+/*
+CHANGELOG -
+
+v1.0.4rel
++ Added player death notification
++ Added CVARs to choose whether or not to forward connection / disconnection message
++ Added Steam ID info upon connection
+* Changed OnClientConnected to OnClientAuthorized in order to obtain Steam ID info
+* Minor ForwardToClient optimization
+* Changed char out size to MAX_BUFFER_LENGTH
+- Removed unused error messages, for now
+
+v1.0.3rel
+* Fixed callback not executable error
+* Added GetTeamName function to get rid of the shitty hardcoded team name code
+
+*/
+
 #include <sourcemod>
 #include <sdktools>
 #include <socket>
@@ -10,7 +28,7 @@
 #include <SteamWorks>
 #include <smlib>
 #define PLUGIN_AUTHOR "Still / 341464"
-#define PLUGIN_VERSION "1.0.2rel"
+#define PLUGIN_VERSION "1.0.4rel"
 #define DEBUG 
 
 #define PTYPE_IDENTITY_STRING 0x00
@@ -25,18 +43,21 @@ Handle ARRAY_Connections;
 Handle ARRAY_ConnectionsIP;
 ConVar g_ConnectionPort;
 ConVar g_ConnectionPassword;
+ConVar g_ConnectionNotify;
+ConVar g_KillNotify;
+ConVar g_KillBotNotify;
 //ConVar g_ConnectionLimit;
 
-char success[]="  OK";
-char emptyPacket[]="  Empty packet";
-char invalidPacket[]="  Invalid packet";
-char invalidContentLength[]="  Invalid content length";
-char badPassword[]="  Bad password";
-char badIP[]="  Bad IP address";
-char badPort[]="  Bad port number";
-char tooMany[]="  Too many connections";
+char success[]="E OK";
+// char emptyPacket[]="E Empty packet";
+// char invalidPacket[]="E Invalid packet";
+// char invalidContentLength[]="E Invalid content length";
+char badPassword[]="E Bad password";
+char badIP[]="E Bad IP address";
+char badPort[]="E Bad port number";
+// char tooMany[]="E Too many connections";
 
-char out[1024];
+char out[MAX_BUFFER_LENGTH];
 int out_size;
 
 
@@ -52,8 +73,13 @@ public void OnPluginStart()
 {
 	g_ConnectionPort = CreateConVar("sm_checkvalve_port", "23456", "Port to send & listen to client messages.", FCVAR_PROTECTED | FCVAR_PRINTABLEONLY, true, 2000.0, true, 65565.0);
 	g_ConnectionPassword = CreateConVar("sm_checkvalve_pw", "changeme", "Password required to connect to the server. Must not be empty for security reasons.", FCVAR_PROTECTED | FCVAR_PRINTABLEONLY);
+	g_ConnectionNotify = CreateConVar("sm_checkvalve_notify_connection", "1", "Should CheckValve forward player connection notifications?", FCVAR_REPLICATED, true, 0.0, true, 1.0);
+	g_KillNotify = CreateConVar("sm_checkvalve_notify_kill", "1", "Should CheckValve forward player kill events?", FCVAR_REPLICATED, true, 0.0, true, 1.0);
+	g_KillBotNotify = CreateConVar("sm_checkvalve_notify_kill_bots", "0", "Should CheckValve forward bot kill events?", FCVAR_REPLICATED, true, 0.0, true, 1.0);
 	//g_ConnectionLimit = CreateConVar("sm_checkvalve_clientlimit", "8", "Maximum client allowed at once.", FCVAR_PROTECTED | FCVAR_PRINTABLEONLY);
 	HookConVarChange(g_ConnectionPort, OnConVarChange);
+	HookEvent("player_death", Event_PlayerDeath);
+	// HookEvent("player_disconnect", Event_Disconnect);
 	//HookConVarChange(g_ConnectionLimit, OnConVarChange);
 	AutoExecConfig(true, "CheckValve.ChatRelay");
 	CreateServer();
@@ -61,7 +87,6 @@ public void OnPluginStart()
 	ARRAY_Connections = CreateArray();
 	ARRAY_ConnectionsIP = CreateArray();
 }
-
 public void OnPluginEnd()
 {
 	int clientCount;
@@ -74,7 +99,37 @@ public void OnPluginEnd()
 	CloseHandle(serverSocket);
 	serverSocket = INVALID_HANDLE;
 }
-
+// public Action Event_Disconnect(Event event, const char[] name, bool dontBroadcast)
+// {
+// 	if(g_ConnectionNotify.BoolValue == true)
+// 	{
+// 		int client = GetClientUserId(GetEventInt(event, "userid"));
+// 		char reason[64];
+// 		GetEventString(event, "reason", reason, sizeof(reason));
+// 		ForwardToClient(_, _, client, "Disconnection", reason);
+// 	}
+// 	return Plugin_Continue;
+// }
+public Action Event_PlayerDeath(Event event, const char[] name, bool dontBroadcast)
+{
+	if (g_KillNotify.BoolValue == true)
+	{
+		int client = GetClientOfUserId(GetEventInt(event, "userid"));
+		int attacker = GetClientOfUserId(GetEventInt(event, "attacker"));
+		if (IsValidClient(client) && g_KillBotNotify.BoolValue == true)
+		{
+			if (IsValidClient(attacker))
+			{
+				char attackerName[MAX_NAME_LENGTH];
+				char buffer[64];
+				GetClientName(attacker, attackerName, sizeof(attackerName));
+				Format(buffer, sizeof(buffer), "was killed by %s", attackerName);
+				ForwardToClient(_, _, client, "Death", buffer);
+			}
+		}
+	}
+	return Plugin_Continue;
+}
 public OnConVarChange(Handle:convar, const String:oldValue[], const String:newValue[])
 {
 	PrintToServer("==============================================================");
@@ -84,7 +139,7 @@ public OnConVarChange(Handle:convar, const String:oldValue[], const String:newVa
 	PrintToServer("==============================================================");
 }
 //Create the server
-stock void CreateServer()
+public void CreateServer()
 {
 	if(serverSocket == INVALID_HANDLE)
 	{
@@ -206,23 +261,29 @@ public OnChildSocketReceive(Handle socket, char[] receiveData, const int dataSiz
 	}
 }
 
-public void OnClientConnected(int client)
+public void OnClientAuthorized(int client, const char[] auth)
 {
-	if (GetArraySize(ARRAY_Connections) != 0)
+	if (g_ConnectionNotify.BoolValue == true)
 	{
-		char steamID[16];
-		SteamWorks_GetClientSteamID(client, steamID, sizeof(steamID));
-		ForwardToClient(_, _, client, "Connection", "has joined the game.");
+		if (GetArraySize(ARRAY_Connections) != 0)
+		{
+			char buffer[64];
+			Format(buffer, sizeof(buffer), "Connection [%s]", auth);
+			ForwardToClient(_, _, client, buffer, "has joined the game.");
+		}
 	}
 }
 
 public void OnClientDisconnect(int client)
 {
-	if (GetArraySize(ARRAY_Connections) != 0)
+	if (g_ConnectionNotify.BoolValue == true)
 	{
-		char steamID[16];
-		SteamWorks_GetClientSteamID(client, steamID, sizeof(steamID));
-		ForwardToClient(_, _, client, "Disconnection", "has left the game.");
+		if (GetArraySize(ARRAY_Connections) != 0)
+		{
+			char buffer[64];
+			Format(buffer, sizeof(buffer), "Disconnection");
+			ForwardToClient(_, _, client, buffer, "has left the game.");
+		}
 	}
 }
 
@@ -304,14 +365,12 @@ stock void ForwardToClient(int short = 230, const char[] command = "", int clien
 	if (StrContains(command, "say_team",false)){teamOrNot = 0x00;}
 	char clientName[MAX_NAME_LENGTH];
 	char timeBuffer[64];
+	char ipBuffer[16];
 	GetClientName(client, clientName, sizeof(clientName));
 	FormatTime(timeBuffer, sizeof(timeBuffer), "%m/%d/%Y - %H:%M:%S");
 	for(int i = 0; i < GetArraySize(ARRAY_Connections); i++)
 	{
-		//Get client :
 		Handle clientSocket = GetArrayCell(ARRAY_Connections, i);
-		char clientIP[16];
-		GetArrayString(ARRAY_ConnectionsIP, i, clientIP, sizeof(clientIP));
 		ByteBuffer chat = CreateByteBuffer(true, out, sizeof(out));
 		chat.WriteInt(0xFFFFFFFF);
 		chat.WriteByte(PTYPE_MESSAGE_DATA);
@@ -319,9 +378,8 @@ stock void ForwardToClient(int short = 230, const char[] command = "", int clien
 		chat.WriteByte(0x01);
 		chat.WriteInt(GetTime());
 		chat.WriteByte(teamOrNot);
-		//will need to improve on this, client may be looking for public or private ip.
-		//the client will probably reject it if it doesn't match.
-		if (StrEqual(clientIP, getIPInfo(1), false)) {chat.WriteString(getIPInfo(1));} else {chat.WriteString(getIPInfo(0));}
+		GetArrayString(ARRAY_ConnectionsIP, i, ipBuffer, sizeof(ipBuffer));
+		chat.WriteString(ipBuffer);
 		chat.WriteString(getIPInfo(2));
 		chat.WriteString(timeBuffer);
 		chat.WriteString(clientName);
@@ -332,3 +390,23 @@ stock void ForwardToClient(int short = 230, const char[] command = "", int clien
 		chat.Close();
 	}
 }
+stock bool IsValidClient(client, bool:replaycheck = true)
+{
+    if(client <= 0 || client > MaxClients)
+    {
+        return false;
+    }
+    if(!IsClientInGame(client))
+    {
+        return false;
+    }
+    if(GetEntProp(client, Prop_Send, "m_bIsCoaching"))
+    {
+        return false;
+    }
+    if(replaycheck)
+    {
+        if(IsClientSourceTV(client) || IsClientReplay(client)) return false;
+    }
+    return true;
+} 
