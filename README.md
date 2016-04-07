@@ -4,7 +4,7 @@ This plugin eliminates the need for an extra Chat Relay server from CheckValve.
 If you have SourceMod and use CheckValve app often, it's almost a must to get.
 
 # Requirements
-1. SourceMod 1.7 or above
+1. SourceMod 1.7 or above (New syntax would not run on 1.6 or older.)
 2. [Socket](https://forums.alliedmods.net/showthread.php?t=67640)
 3. [SteamWorks](https://forums.alliedmods.net/showthread.php?t=229556)
 
