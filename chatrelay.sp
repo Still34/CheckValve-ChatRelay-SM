@@ -1,24 +1,47 @@
 /*
 	Based on Arkarr's Cross Server Chat
-	Written in 1.7 SM Syntax
+	Written in 1.7 SM Syntax 
+	(Socket parts cannot be written in 1.7 syntax last tried, so no enforcing for now.)
 */
 
 /*
-CHANGELOG -
+==================================================================================================================
+CHANGELOG
 
-v1.0.4rel
-+ Added player death notification
-+ Added CVARs to choose whether or not to forward connection / disconnection message
-+ Added Steam ID info upon connection
-* Changed OnClientConnected to OnClientAuthorized in order to obtain Steam ID info
-* Minor ForwardToClient optimization
-* Changed char out size to MAX_BUFFER_LENGTH
-- Removed unused error messages, for now
+	v1.0.5rel
+	+ Added message filter (credits to El Diablo's Admin See All Commands) along with CVAR to toggle it
+	+ Added ConVar change notification
+	+ Added IsValidClient check in OnClientSayCommand_Post
+	+ Added client index check in the ForwardToClient function
+	+ Added a fallback when the client disconnects abnormally (Typically on clients using Android M Doze feature or Airplane Mode)
+		NOTE to myself: You should probably implement heartbeat. Probably.
+	* Minor code change in attempt to comply with the 1.7 syntax.
+	* Buffer size optimization
+	* Upped short size to 256, still a bad practice I know. Still no idea how to make it adapt to the client's IP.
 
-v1.0.3rel
-* Fixed callback not executable error
-* Added GetTeamName function to get rid of the shitty hardcoded team name code
+	v1.0.4rel
+	+ Added player death notification
+	+ Added CVARs to choose whether or not to forward connection / disconnection message
+	+ Added Steam ID info upon connection
+	* Changed OnClientConnected to OnClientAuthorized in order to obtain Steam ID info
+	* Minor ForwardToClient optimization
+	* Changed char out size to MAX_BUFFER_LENGTH
+	- Removed unused error messages, for now
 
+	v1.0.3rel
+	* Fixed callback not executable error
+	* Added GetTeamName function to get rid of the shitty hardcoded team name code
+
+==================================================================================================================
+TO-DO
+
+	* Figure out how to make the short size dynamic
+	* Implement heartbeat check
+	* Implement max client
+	* Add disconnection reason to the disconnect message
+	* Start learning KeyValue and make the ignore message list more user friendly
+
+==================================================================================================================
 */
 
 #include <sourcemod>
@@ -28,8 +51,7 @@ v1.0.3rel
 #include <SteamWorks>
 #include <smlib>
 #define PLUGIN_AUTHOR "Still / 341464"
-#define PLUGIN_VERSION "1.0.4rel"
-#define DEBUG 
+#define PLUGIN_VERSION "1.0.5rel"
 
 #define PTYPE_IDENTITY_STRING 0x00
 #define PTYPE_HEARTBEAT 0x01
@@ -45,6 +67,7 @@ ConVar g_ConnectionPort;
 ConVar g_ConnectionPassword;
 ConVar g_ConnectionNotify;
 ConVar g_KillNotify;
+ConVar g_Filter;
 ConVar g_KillBotNotify;
 //ConVar g_ConnectionLimit;
 
@@ -60,26 +83,33 @@ char badPort[]="E Bad port number";
 char out[MAX_BUFFER_LENGTH];
 int out_size;
 
-
 public Plugin myinfo = 
 {
 	name = "[ANY] CheckValve Chat Relay Plugin",
 	author = PLUGIN_AUTHOR,
 	description = "Based on the mobile app CheckValve, mimics the standalone chat relay server.",
-	version = PLUGIN_VERSION,
-	url = "http://www.sourcemod.net"
+	version = PLUGIN_VERSION
+};
+stock const char IgnoreCommands[][] = {
+	"!",
+	"rtd"
 };
 public void OnPluginStart()
 {
 	g_ConnectionPort = CreateConVar("sm_checkvalve_port", "23456", "Port to send & listen to client messages.", FCVAR_PROTECTED | FCVAR_PRINTABLEONLY, true, 2000.0, true, 65565.0);
-	g_ConnectionPassword = CreateConVar("sm_checkvalve_pw", "changeme", "Password required to connect to the server. Must not be empty for security reasons.", FCVAR_PROTECTED | FCVAR_PRINTABLEONLY);
-	g_ConnectionNotify = CreateConVar("sm_checkvalve_notify_connection", "1", "Should CheckValve forward player connection notifications?", FCVAR_REPLICATED, true, 0.0, true, 1.0);
-	g_KillNotify = CreateConVar("sm_checkvalve_notify_kill", "1", "Should CheckValve forward player kill events?", FCVAR_REPLICATED, true, 0.0, true, 1.0);
-	g_KillBotNotify = CreateConVar("sm_checkvalve_notify_kill_bots", "0", "Should CheckValve forward bot kill events?", FCVAR_REPLICATED, true, 0.0, true, 1.0);
+	g_ConnectionPassword = CreateConVar("sm_checkvalve_pw", "changeme", "Password required to connect to the server. Must not be empty for security reasons. Max chars: 64", FCVAR_PROTECTED | FCVAR_PRINTABLEONLY);
+	g_ConnectionNotify = CreateConVar("sm_checkvalve_notify_connection", "1", "Should the plugin forward player connection notifications?", FCVAR_REPLICATED, true, 0.0, true, 1.0);
+	g_Filter = CreateConVar("sm_checkvalve_filter", "1", "Should the plugin forward unwanted commands/words?", FCVAR_REPLICATED, true, 0.0, true, 1.0);
+	g_KillNotify = CreateConVar("sm_checkvalve_notify_kill", "1", "Should the plugin forward player kill events?", FCVAR_REPLICATED, true, 0.0, true, 1.0);
+	g_KillBotNotify = CreateConVar("sm_checkvalve_notify_kill_bots", "0", "Should the plugin forward bot kill events?", FCVAR_REPLICATED, true, 0.0, true, 1.0);
 	//g_ConnectionLimit = CreateConVar("sm_checkvalve_clientlimit", "8", "Maximum client allowed at once.", FCVAR_PROTECTED | FCVAR_PRINTABLEONLY);
 	HookConVarChange(g_ConnectionPort, OnConVarChange);
+	HookConVarChange(g_ConnectionPassword, OnConVarChange);
+	HookConVarChange(g_ConnectionNotify, OnConVarChange);
+	HookConVarChange(g_Filter, OnConVarChange);
+	HookConVarChange(g_KillNotify, OnConVarChange);
+	HookConVarChange(g_KillBotNotify, OnConVarChange);
 	HookEvent("player_death", Event_PlayerDeath);
-	// HookEvent("player_disconnect", Event_Disconnect);
 	//HookConVarChange(g_ConnectionLimit, OnConVarChange);
 	AutoExecConfig(true, "CheckValve.ChatRelay");
 	CreateServer();
@@ -99,46 +129,37 @@ public void OnPluginEnd()
 	CloseHandle(serverSocket);
 	serverSocket = INVALID_HANDLE;
 }
-// public Action Event_Disconnect(Event event, const char[] name, bool dontBroadcast)
-// {
-// 	if(g_ConnectionNotify.BoolValue == true)
-// 	{
-// 		int client = GetClientUserId(GetEventInt(event, "userid"));
-// 		char reason[64];
-// 		GetEventString(event, "reason", reason, sizeof(reason));
-// 		ForwardToClient(_, _, client, "Disconnection", reason);
-// 	}
-// 	return Plugin_Continue;
-// }
+//Might make a global convar hook using server_cvar event
+public void OnConVarChange(Handle convar, const char[] oldValue, const char[] newValue)
+{
+	if (GetArraySize(ARRAY_Connections) != 0)
+	{
+		char cvarName[64];
+		char buffer[192];
+		GetConVarName(convar, cvarName, sizeof(cvarName));
+		Format(buffer, sizeof(buffer), ">>>Cvar '%s' was changed from %s to %s", cvarName, oldValue, newValue);
+		ForwardToClient(_, _, 0, "Plugin settings changed", buffer);
+	}
+}
 public Action Event_PlayerDeath(Event event, const char[] name, bool dontBroadcast)
 {
 	if (g_KillNotify.BoolValue == true)
 	{
 		int client = GetClientOfUserId(GetEventInt(event, "userid"));
 		int attacker = GetClientOfUserId(GetEventInt(event, "attacker"));
-		if (IsValidClient(client) && g_KillBotNotify.BoolValue == true)
+		if (IsValidClient(client) && 
+			IsValidClient(attacker) &&
+			g_KillBotNotify.BoolValue == true)
 		{
-			if (IsValidClient(attacker))
-			{
-				char attackerName[MAX_NAME_LENGTH];
-				char buffer[64];
-				GetClientName(attacker, attackerName, sizeof(attackerName));
-				Format(buffer, sizeof(buffer), "was killed by %s", attackerName);
-				ForwardToClient(_, _, client, "Death", buffer);
-			}
+			char attackerName[MAX_NAME_LENGTH];
+			char buffer[64];
+			GetClientName(attacker, attackerName, sizeof(attackerName));
+			Format(buffer, sizeof(buffer), "was killed by %s", attackerName);
+			ForwardToClient(_, _, client, "Death", buffer);
 		}
 	}
 	return Plugin_Continue;
 }
-public OnConVarChange(Handle:convar, const String:oldValue[], const String:newValue[])
-{
-	PrintToServer("==============================================================");
-	PrintToServer("Ignore this if you just started up the server but if not -");
-	PrintToServer("THE CONVAR YOU JUST CHANGED DOES NOT AFFECT THE RELAY SERVER");
-	PrintToServer("YOU NEED TO CHANGE IT INSIDE THE PLUGIN CONFIG FILE INSTEAD.");
-	PrintToServer("==============================================================");
-}
-//Create the server
 public void CreateServer()
 {
 	if(serverSocket == INVALID_HANDLE)
@@ -153,10 +174,17 @@ public void CreateServer()
 		PrintToServer("============================");
 	}
 }
-public OnServerSocketError(Handle socket, const errorType, const errorNum, any arg)
+public OnServerSocketError(Handle socket, const int errorType, const int errorNum, any arg)
 {
-	LogError("socket error %d (errno %d)", errorType, errorNum);
 	int index = FindValueInArray(ARRAY_Connections, socket);
+	if(errorType == 6)
+	{
+		PrintToServer("Lost connection to client %d!", index);
+	}
+	else
+	{
+		LogError("Unexpected socket error %d (errno %d)", errorType, errorNum);
+	}
 	if(index != -1)
 	{
 		RemoveFromArray(ARRAY_Connections, index); 
@@ -175,16 +203,16 @@ public OnChildSocketDisconnected(Handle socket, any hFile)
 	}
 	CloseHandle(socket);
 }
-public OnSocketIncoming(Handle socket, Handle newSocket, const char[] remoteIP, remotePort, any arg)
+public OnSocketIncoming(Handle socket, Handle newSocket, const char[] remoteIP, int remotePort, any arg)
 {
 	PrintToServer("Connection detected! (%s:%d)", remoteIP, remotePort);
 	SendIdentity(newSocket);
-	SocketSetReceiveCallback(newSocket, OnChildSocketReceive);			//Bla bla bla, you got it.	
-	SocketSetDisconnectCallback(newSocket, OnChildSocketDisconnected);	//Bla bla bla, you got it.
-	SocketSetErrorCallback(newSocket, OnServerSocketError);	//Bla bla bla, you got it.
+	SocketSetReceiveCallback(newSocket, OnChildSocketReceive);
+	SocketSetDisconnectCallback(newSocket, OnChildSocketDisconnected);
+	SocketSetErrorCallback(newSocket, OnServerSocketError);
 	PushArrayCell(ARRAY_Connections, newSocket); 
 }
-public OnChildSocketReceive(Handle socket, char[] receiveData, const int dataSize, any hFile)
+public OnChildSocketReceive(Handle socket, const char[] receiveData, const int dataSize, any hFile)
 {
 	ByteBuffer status = CreateByteBuffer(true, out, sizeof(out));
 	status.WriteInt(0xFFFFFFFF);
@@ -211,7 +239,7 @@ public OnChildSocketReceive(Handle socket, char[] receiveData, const int dataSiz
 		strcopy(client_IP, sizeof(client_IP), receiveData[key_length]);
 		PushArrayString(ARRAY_ConnectionsIP, client_IP);
 
-		char client_Port[6];
+		char client_Port[8];
 		int ip_length = key_length + strlen(client_IP) + 1;
 		strcopy(client_Port, sizeof(client_Port), receiveData[ip_length]);
 
@@ -280,8 +308,7 @@ public void OnClientDisconnect(int client)
 	{
 		if (GetArraySize(ARRAY_Connections) != 0)
 		{
-			char buffer[64];
-			Format(buffer, sizeof(buffer), "Disconnection");
+			char buffer[] = "Disconnection";
 			ForwardToClient(_, _, client, buffer, "has left the game.");
 		}
 	}
@@ -289,11 +316,18 @@ public void OnClientDisconnect(int client)
 
 public void OnClientSayCommand_Post(int client, const char[] command, const char[] sArgs)
 {
-	if (GetArraySize(ARRAY_Connections) != 0)
+	if (GetArraySize(ARRAY_Connections) != 0 && !HasIgnoreCommands(sArgs))
 	{
-		char teamBuffer[16];
-		int iClientTeam = GetClientTeam(client);
-		GetTeamName(iClientTeam, teamBuffer, sizeof(teamBuffer));
+		char teamBuffer[8];
+		if (IsValidClient(client))
+		{
+			int iClientTeam = GetClientTeam(client);
+			GetTeamName(iClientTeam, teamBuffer, sizeof(teamBuffer));
+		}
+		else
+		{
+			Format(teamBuffer, sizeof(teamBuffer), "Yourself");
+		}
 		ForwardToClient(_, command, client, teamBuffer, sArgs);
 	}
 }
@@ -344,8 +378,8 @@ stock char[] getIPInfo(int mode)
 stock void SendIdentity(Handle socket)
 {
 	PrintToServer("Communicating with the client...");
-	char identity[64];
-	Format(identity, sizeof(identity), "CheckValve SourceMod Plugin %s", PLUGIN_VERSION);
+	char identity[32];
+	Format(identity, sizeof(identity), "CheckValve Plugin %s", PLUGIN_VERSION);
 	ByteBuffer ident = CreateByteBuffer(true, out, sizeof(out));
 	ident.WriteInt(0xFFFFFFFF);
 	ident.WriteByte(PTYPE_IDENTITY_STRING);
@@ -353,20 +387,27 @@ stock void SendIdentity(Handle socket)
 	ident.WriteString(identity);
 	out_size = ident.Dump(out,sizeof(out));
 	SocketSend(socket, out, out_size);
-	PrintToServer("Sent identity packets, version %s", identity);
+	//PrintToServer("Sent identity packets, version %s", identity);
 	ident.Close();
 }
 
 
 //short is again, yet to be determined
-stock void ForwardToClient(int short = 230, const char[] command = "", int client, char[] team ,const char[] msg)
+stock void ForwardToClient(int short = 256, const char[] command = "", int client, char[] team = "",const char[] msg)
 {
 	int teamOrNot = 0x01;
 	if (StrContains(command, "say_team",false)){teamOrNot = 0x00;}
 	char clientName[MAX_NAME_LENGTH];
-	char timeBuffer[64];
+	char timeBuffer[32];
 	char ipBuffer[16];
-	GetClientName(client, clientName, sizeof(clientName));
+	if (client >= 1)
+	{
+		GetClientName(client, clientName, sizeof(clientName));
+	}
+	else
+	{
+		Format(clientName, sizeof(clientName), "Console");
+	}
 	FormatTime(timeBuffer, sizeof(timeBuffer), "%m/%d/%Y - %H:%M:%S");
 	for(int i = 0; i < GetArraySize(ARRAY_Connections); i++)
 	{
@@ -410,3 +451,19 @@ stock bool IsValidClient(client, bool:replaycheck = true)
     }
     return true;
 } 
+stock bool HasIgnoreCommands(const char[] CheckCommand)
+{
+	if (g_Filter.BoolValue == true)
+	{
+		char commandBuffer[128];
+		String_ToLower(CheckCommand, commandBuffer, sizeof(commandBuffer));
+		for(int i = 0; i < sizeof(IgnoreCommands); i++)
+		{
+			if(StrContains(commandBuffer,IgnoreCommands[i])==0)
+			{
+				return true;
+			}
+		}
+	}
+	return false;
+}
