@@ -7,6 +7,10 @@
 /*
 ==================================================================================================================
 CHANGELOG
+	
+	v1.0.6rel
+	+ Added an option to announce connection to players
+	* Fixed team buffer size
 
 	v1.0.5rel
 	+ Added message filter (credits to El Diablo's Admin See All Commands) along with CVAR to toggle it
@@ -47,11 +51,12 @@ TO-DO
 #include <sourcemod>
 #include <sdktools>
 #include <socket>
-#include <bytebuffer>
 #include <SteamWorks>
+#include <morecolors>
+#include <bytebuffer>
 #include <smlib>
 #define PLUGIN_AUTHOR "Still / 341464"
-#define PLUGIN_VERSION "1.0.5rel"
+#define PLUGIN_VERSION "1.0.6rel"
 
 #define PTYPE_IDENTITY_STRING 0x00
 #define PTYPE_HEARTBEAT 0x01
@@ -68,16 +73,17 @@ ConVar g_ConnectionPassword;
 ConVar g_ConnectionNotify;
 ConVar g_KillNotify;
 ConVar g_Filter;
+ConVar g_ConnectionAnnounce;
 ConVar g_KillBotNotify;
 //ConVar g_ConnectionLimit;
 
-char success[]="E OK";
+char success[] = "E OK";
 // char emptyPacket[]="E Empty packet";
 // char invalidPacket[]="E Invalid packet";
 // char invalidContentLength[]="E Invalid content length";
-char badPassword[]="E Bad password";
-char badIP[]="E Bad IP address";
-char badPort[]="E Bad port number";
+char badPassword[] = "E Bad password";
+char badIP[] = "E Bad IP address";
+char badPort[] = "E Bad port number";
 // char tooMany[]="E Too many connections";
 
 char out[MAX_BUFFER_LENGTH];
@@ -85,13 +91,13 @@ int out_size;
 
 public Plugin myinfo = 
 {
-	name = "[ANY] CheckValve Chat Relay Plugin",
-	author = PLUGIN_AUTHOR,
-	description = "Based on the mobile app CheckValve, mimics the standalone chat relay server.",
+	name = "[ANY] CheckValve Chat Relay Plugin", 
+	author = PLUGIN_AUTHOR, 
+	description = "Based on the mobile app CheckValve, mimics the standalone chat relay server.", 
 	version = PLUGIN_VERSION
 };
-stock const char IgnoreCommands[][] = {
-	"!",
+stock const char IgnoreCommands[][] =  {
+	"!", 
 	"rtd"
 };
 public void OnPluginStart()
@@ -102,6 +108,7 @@ public void OnPluginStart()
 	g_Filter = CreateConVar("sm_checkvalve_filter", "1", "Should the plugin forward unwanted commands/words?", FCVAR_REPLICATED, true, 0.0, true, 1.0);
 	g_KillNotify = CreateConVar("sm_checkvalve_notify_kill", "1", "Should the plugin forward player kill events?", FCVAR_REPLICATED, true, 0.0, true, 1.0);
 	g_KillBotNotify = CreateConVar("sm_checkvalve_notify_kill_bots", "0", "Should the plugin forward bot kill events?", FCVAR_REPLICATED, true, 0.0, true, 1.0);
+	g_ConnectionAnnounce = CreateConVar("sm_checkvalve_announce_admin", "1", "Should the plugin announce an admin's connection?", FCVAR_REPLICATED, true, 0.0, true, 1.0);
 	//g_ConnectionLimit = CreateConVar("sm_checkvalve_clientlimit", "8", "Maximum client allowed at once.", FCVAR_PROTECTED | FCVAR_PRINTABLEONLY);
 	HookConVarChange(g_ConnectionPort, OnConVarChange);
 	HookConVarChange(g_ConnectionPassword, OnConVarChange);
@@ -120,12 +127,12 @@ public void OnPluginStart()
 public void OnPluginEnd()
 {
 	int clientCount;
-	for(int i = 0; i < GetArraySize(ARRAY_Connections); i++)
+	for (int i = 0; i < GetArraySize(ARRAY_Connections); i++)
 	{
 		clientCount++;
 	}
 	PrintToServer("Chat Relay server shutting down...");
-	PrintToServer("Dropping %i clients...",clientCount);
+	PrintToServer("Dropping %i clients...", clientCount);
 	CloseHandle(serverSocket);
 	serverSocket = INVALID_HANDLE;
 }
@@ -148,7 +155,7 @@ public Action Event_PlayerDeath(Event event, const char[] name, bool dontBroadca
 		int client = GetClientOfUserId(GetEventInt(event, "userid"));
 		int attacker = GetClientOfUserId(GetEventInt(event, "attacker"));
 		if (IsValidClient(client) && 
-			IsValidClient(attacker) &&
+			IsValidClient(attacker) && 
 			g_KillBotNotify.BoolValue == true)
 		{
 			char attackerName[MAX_NAME_LENGTH];
@@ -162,11 +169,11 @@ public Action Event_PlayerDeath(Event event, const char[] name, bool dontBroadca
 }
 public void CreateServer()
 {
-	if(serverSocket == INVALID_HANDLE)
+	if (serverSocket == INVALID_HANDLE)
 	{
 		serverSocket = SocketCreate(SOCKET_TCP, OnServerSocketError);
 		SocketBind(serverSocket, "0.0.0.0", g_ConnectionPort.IntValue); //Listen everything
-		SocketListen(serverSocket, OnSocketIncoming);	
+		SocketListen(serverSocket, OnSocketIncoming);
 		PrintToServer("============================");
 		PrintToServer("|Chat Relay server up!|");
 		PrintToServer("|Port: %i|", g_ConnectionPort.IntValue);
@@ -177,7 +184,7 @@ public void CreateServer()
 public OnServerSocketError(Handle socket, const int errorType, const int errorNum, any arg)
 {
 	int index = FindValueInArray(ARRAY_Connections, socket);
-	if(errorType == 6)
+	if (errorType == 6)
 	{
 		PrintToServer("Lost connection to client %d!", index);
 	}
@@ -185,18 +192,18 @@ public OnServerSocketError(Handle socket, const int errorType, const int errorNu
 	{
 		LogError("Unexpected socket error %d (errno %d)", errorType, errorNum);
 	}
-	if(index != -1)
+	if (index != -1)
 	{
-		RemoveFromArray(ARRAY_Connections, index); 
-		RemoveFromArray(ARRAY_ConnectionsIP, index); 
+		RemoveFromArray(ARRAY_Connections, index);
+		RemoveFromArray(ARRAY_ConnectionsIP, index);
 	}
 	CloseHandle(socket);
 }
 public OnChildSocketDisconnected(Handle socket, any hFile)
 {
-	PrintToServer("Lost connection to client");	
+	PrintToServer("Lost connection to client");
 	int index = FindValueInArray(ARRAY_Connections, socket);
-	if(index != -1)
+	if (index != -1)
 	{
 		RemoveFromArray(ARRAY_Connections, index);
 		RemoveFromArray(ARRAY_ConnectionsIP, index);
@@ -210,13 +217,13 @@ public OnSocketIncoming(Handle socket, Handle newSocket, const char[] remoteIP, 
 	SocketSetReceiveCallback(newSocket, OnChildSocketReceive);
 	SocketSetDisconnectCallback(newSocket, OnChildSocketDisconnected);
 	SocketSetErrorCallback(newSocket, OnServerSocketError);
-	PushArrayCell(ARRAY_Connections, newSocket); 
+	PushArrayCell(ARRAY_Connections, newSocket);
 }
 public OnChildSocketReceive(Handle socket, const char[] receiveData, const int dataSize, any hFile)
 {
 	ByteBuffer status = CreateByteBuffer(true, out, sizeof(out));
 	status.WriteInt(0xFFFFFFFF);
-
+	
 	bool err = false;
 	char server_key[64];
 	char client_key[64];
@@ -238,17 +245,18 @@ public OnChildSocketReceive(Handle socket, const char[] receiveData, const int d
 		int key_length = 9 + strlen(client_key) + 1;
 		strcopy(client_IP, sizeof(client_IP), receiveData[key_length]);
 		PushArrayString(ARRAY_ConnectionsIP, client_IP);
-
+		
 		char client_Port[8];
 		int ip_length = key_length + strlen(client_IP) + 1;
 		strcopy(client_Port, sizeof(client_Port), receiveData[ip_length]);
-
+		
 		if (StrEqual(client_IP, getIPInfo(0)) || StrEqual(client_IP, getIPInfo(1)))
 		{
-
-			if(StrEqual(client_Port, getIPInfo(2)))
+			
+			if (StrEqual(client_Port, getIPInfo(2)))
 			{
 				PrintToServer("Accepting connection...");
+				if (g_ConnectionAnnounce.BoolValue == true) {CPrintToChatAll("{blue}[ChatRelay]{orange} An admin {white}has connnected to the chat server.");}
 				status.WriteByte(PTYPE_CONNECTION_SUCCESS);
 				status.WriteShort(sizeof(success));
 				status.WriteString(success);
@@ -271,15 +279,15 @@ public OnChildSocketReceive(Handle socket, const char[] receiveData, const int d
 			err = true;
 		}
 	}
-
-
-	out_size = status.Dump(out,sizeof(out));
+	
+	
+	out_size = status.Dump(out, sizeof(out));
 	SocketSend(socket, out, out_size);
 	status.Close();
 	if (err)
 	{
 		int index = FindValueInArray(ARRAY_Connections, socket);
-		if(index != -1)
+		if (index != -1)
 		{
 			RemoveFromArray(ARRAY_Connections, index);
 			RemoveFromArray(ARRAY_ConnectionsIP, index);
@@ -318,7 +326,7 @@ public void OnClientSayCommand_Post(int client, const char[] command, const char
 {
 	if (GetArraySize(ARRAY_Connections) != 0 && !HasIgnoreCommands(sArgs))
 	{
-		char teamBuffer[8];
+		char teamBuffer[16];
 		if (IsValidClient(client))
 		{
 			int iClientTeam = GetClientTeam(client);
@@ -355,11 +363,11 @@ stock char[] getIPInfo(int mode)
 			int ip;
 			int octets[4];
 			SteamWorks_GetPublicIP(octets);
-			ip =
-				octets[0] << 24	|
-				octets[1] << 16	|
-				octets[2] << 8	|
-				octets[3];
+			ip = 
+			octets[0] << 24 | 
+			octets[1] << 16 | 
+			octets[2] << 8 | 
+			octets[3];
 			LongToIP(ip, ipOut, sizeof(ipOut));
 		}
 		case 1:
@@ -385,7 +393,7 @@ stock void SendIdentity(Handle socket)
 	ident.WriteByte(PTYPE_IDENTITY_STRING);
 	ident.WriteShort(sizeof(identity));
 	ident.WriteString(identity);
-	out_size = ident.Dump(out,sizeof(out));
+	out_size = ident.Dump(out, sizeof(out));
 	SocketSend(socket, out, out_size);
 	//PrintToServer("Sent identity packets, version %s", identity);
 	ident.Close();
@@ -393,10 +401,10 @@ stock void SendIdentity(Handle socket)
 
 
 //short is again, yet to be determined
-stock void ForwardToClient(int short = 256, const char[] command = "", int client, char[] team = "",const char[] msg)
+stock void ForwardToClient(int short = 256, const char[] command = "", int client, char[] team = "", const char[] msg)
 {
 	int teamOrNot = 0x01;
-	if (StrContains(command, "say_team",false)){teamOrNot = 0x00;}
+	if (StrContains(command, "say_team", false)) { teamOrNot = 0x00; }
 	char clientName[MAX_NAME_LENGTH];
 	char timeBuffer[32];
 	char ipBuffer[16];
@@ -409,7 +417,7 @@ stock void ForwardToClient(int short = 256, const char[] command = "", int clien
 		Format(clientName, sizeof(clientName), "Console");
 	}
 	FormatTime(timeBuffer, sizeof(timeBuffer), "%m/%d/%Y - %H:%M:%S");
-	for(int i = 0; i < GetArraySize(ARRAY_Connections); i++)
+	for (int i = 0; i < GetArraySize(ARRAY_Connections); i++)
 	{
 		Handle clientSocket = GetArrayCell(ARRAY_Connections, i);
 		ByteBuffer chat = CreateByteBuffer(true, out, sizeof(out));
@@ -426,44 +434,44 @@ stock void ForwardToClient(int short = 256, const char[] command = "", int clien
 		chat.WriteString(clientName);
 		chat.WriteString(team);
 		chat.WriteString(msg);
-		out_size = chat.Dump(out,sizeof(out));
+		out_size = chat.Dump(out, sizeof(out));
 		SocketSend(clientSocket, out, out_size);
 		chat.Close();
 	}
 }
 stock bool IsValidClient(client, bool:replaycheck = true)
 {
-    if(client <= 0 || client > MaxClients)
-    {
-        return false;
-    }
-    if(!IsClientInGame(client))
-    {
-        return false;
-    }
-    if(GetEntProp(client, Prop_Send, "m_bIsCoaching"))
-    {
-        return false;
-    }
-    if(replaycheck)
-    {
-        if(IsClientSourceTV(client) || IsClientReplay(client)) return false;
-    }
-    return true;
-} 
+	if (client <= 0 || client > MaxClients)
+	{
+		return false;
+	}
+	if (!IsClientInGame(client))
+	{
+		return false;
+	}
+	if (GetEntProp(client, Prop_Send, "m_bIsCoaching"))
+	{
+		return false;
+	}
+	if (replaycheck)
+	{
+		if (IsClientSourceTV(client) || IsClientReplay(client))return false;
+	}
+	return true;
+}
 stock bool HasIgnoreCommands(const char[] CheckCommand)
 {
 	if (g_Filter.BoolValue == true)
 	{
 		char commandBuffer[128];
 		String_ToLower(CheckCommand, commandBuffer, sizeof(commandBuffer));
-		for(int i = 0; i < sizeof(IgnoreCommands); i++)
+		for (int i = 0; i < sizeof(IgnoreCommands); i++)
 		{
-			if(StrContains(commandBuffer,IgnoreCommands[i])==0)
+			if (StrContains(commandBuffer, IgnoreCommands[i]) == 0)
 			{
 				return true;
 			}
 		}
 	}
 	return false;
-}
+} 
