@@ -8,6 +8,9 @@
 ==================================================================================================================
 CHANGELOG
 	
+	v1.0.7rel
+	* Revamped ForwardToClient code (Thanks David)
+
 	v1.0.6rel
 	+ Added an option to announce connection to players
 	* Fixed team buffer size
@@ -56,7 +59,7 @@ TO-DO
 #include <bytebuffer>
 #include <smlib>
 #define PLUGIN_AUTHOR "Still / 341464"
-#define PLUGIN_VERSION "1.0.6rel"
+#define PLUGIN_VERSION "1.0.7rel"
 
 #define PTYPE_IDENTITY_STRING 0x00
 #define PTYPE_HEARTBEAT 0x01
@@ -77,7 +80,7 @@ ConVar g_ConnectionAnnounce;
 ConVar g_KillBotNotify;
 //ConVar g_ConnectionLimit;
 
-char success[] = "E OK";
+char success[] = "OK";
 // char emptyPacket[]="E Empty packet";
 // char invalidPacket[]="E Invalid packet";
 // char invalidContentLength[]="E Invalid content length";
@@ -145,7 +148,7 @@ public void OnConVarChange(Handle convar, const char[] oldValue, const char[] ne
 		char buffer[192];
 		GetConVarName(convar, cvarName, sizeof(cvarName));
 		Format(buffer, sizeof(buffer), ">>>Cvar '%s' was changed from %s to %s", cvarName, oldValue, newValue);
-		ForwardToClient(_, _, 0, "Plugin settings changed", buffer);
+		ForwardToClient(_, 0, "Plugin settings changed", buffer);
 	}
 }
 public Action Event_PlayerDeath(Event event, const char[] name, bool dontBroadcast)
@@ -162,7 +165,7 @@ public Action Event_PlayerDeath(Event event, const char[] name, bool dontBroadca
 			char buffer[64];
 			GetClientName(attacker, attackerName, sizeof(attackerName));
 			Format(buffer, sizeof(buffer), "was killed by %s", attackerName);
-			ForwardToClient(_, _, client, "Death", buffer);
+			ForwardToClient(_, client, "Death", buffer);
 		}
 	}
 	return Plugin_Continue;
@@ -305,7 +308,7 @@ public void OnClientAuthorized(int client, const char[] auth)
 		{
 			char buffer[64];
 			Format(buffer, sizeof(buffer), "Connection [%s]", auth);
-			ForwardToClient(_, _, client, buffer, "has joined the game.");
+			ForwardToClient(_, client, buffer, "has joined the game.");
 		}
 	}
 }
@@ -317,7 +320,7 @@ public void OnClientDisconnect(int client)
 		if (GetArraySize(ARRAY_Connections) != 0)
 		{
 			char buffer[] = "Disconnection";
-			ForwardToClient(_, _, client, buffer, "has left the game.");
+			ForwardToClient(_, client, buffer, "has left the game.");
 		}
 	}
 }
@@ -336,7 +339,7 @@ public void OnClientSayCommand_Post(int client, const char[] command, const char
 		{
 			Format(teamBuffer, sizeof(teamBuffer), "Yourself");
 		}
-		ForwardToClient(_, command, client, teamBuffer, sArgs);
+		ForwardToClient(command, client, teamBuffer, sArgs);
 	}
 }
 
@@ -401,7 +404,45 @@ stock void SendIdentity(Handle socket)
 
 
 //short is again, yet to be determined
-stock void ForwardToClient(int short = 256, const char[] command = "", int client, char[] team = "", const char[] msg)
+// stock void ForwardToClient(int short = 256, const char[] command = "", int client, char[] team = "", const char[] msg)
+// {
+// 	int teamOrNot = 0x01;
+// 	if (StrContains(command, "say_team", false)) { teamOrNot = 0x00; }
+// 	char clientName[MAX_NAME_LENGTH];
+// 	char timeBuffer[32];
+// 	char ipBuffer[16];
+// 	if (client >= 1)
+// 	{
+// 		GetClientName(client, clientName, sizeof(clientName));
+// 	}
+// 	else
+// 	{
+// 		Format(clientName, sizeof(clientName), "Console");
+// 	}
+// 	FormatTime(timeBuffer, sizeof(timeBuffer), "%m/%d/%Y - %H:%M:%S");
+// 	for (int i = 0; i < GetArraySize(ARRAY_Connections); i++)
+// 	{
+// 		Handle clientSocket = GetArrayCell(ARRAY_Connections, i);
+// 		ByteBuffer chat = CreateByteBuffer(true, out, sizeof(out));
+// 		chat.WriteInt(0xFFFFFFFF);
+// 		chat.WriteByte(PTYPE_MESSAGE_DATA);
+// 		chat.WriteShort(short);
+// 		chat.WriteByte(0x01);
+// 		chat.WriteInt(GetTime());
+// 		chat.WriteByte(teamOrNot);
+// 		GetArrayString(ARRAY_ConnectionsIP, i, ipBuffer, sizeof(ipBuffer));
+// 		chat.WriteString(ipBuffer);
+// 		chat.WriteString(getIPInfo(2));
+// 		chat.WriteString(timeBuffer);
+// 		chat.WriteString(clientName);
+// 		chat.WriteString(team);
+// 		chat.WriteString(msg);
+// 		out_size = chat.Dump(out, sizeof(out));
+// 		SocketSend(clientSocket, out, out_size);
+// 		chat.Close();
+// 	}
+// }
+stock void ForwardToClient(const char[] command = "", int client, char[] team = "", const char[] msg)
 {
 	int teamOrNot = 0x01;
 	if (StrContains(command, "say_team", false)) { teamOrNot = 0x00; }
@@ -416,20 +457,45 @@ stock void ForwardToClient(int short = 256, const char[] command = "", int clien
 	{
 		Format(clientName, sizeof(clientName), "Console");
 	}
+
 	FormatTime(timeBuffer, sizeof(timeBuffer), "%m/%d/%Y - %H:%M:%S");
+
+	int ipLength;
+	int portLength;
+	int timeLength;
+	int nameLength;
+	int teamLength;
+	int msgLength;
+	int contentLength;
+	char serverPort[8];
+	Format(serverPort, sizeof(serverPort), getIPInfo(2));
+
 	for (int i = 0; i < GetArraySize(ARRAY_Connections); i++)
 	{
+		// Get the IP address and port to include in the packet
+		GetArrayString(ARRAY_ConnectionsIP, i, ipBuffer, sizeof(ipBuffer));
+
+		// Get the lengths of all of the strings in the packet
+		ipLength = strlen(ipBuffer)+1;
+		portLength = strlen(serverPort)+1;
+		timeLength = strlen(timeBuffer)+1;
+		nameLength = strlen(clientName)+1;
+		teamLength = strlen(team)+1;
+		msgLength = strlen(msg)+1;
+
+		// Calculate the content length
+		contentLength = (1+4+1+ipLength+portLength+timeLength+nameLength+teamLength+msgLength);
+
 		Handle clientSocket = GetArrayCell(ARRAY_Connections, i);
 		ByteBuffer chat = CreateByteBuffer(true, out, sizeof(out));
 		chat.WriteInt(0xFFFFFFFF);
 		chat.WriteByte(PTYPE_MESSAGE_DATA);
-		chat.WriteShort(short);
+		chat.WriteShort(contentLength);
 		chat.WriteByte(0x01);
 		chat.WriteInt(GetTime());
 		chat.WriteByte(teamOrNot);
-		GetArrayString(ARRAY_ConnectionsIP, i, ipBuffer, sizeof(ipBuffer));
 		chat.WriteString(ipBuffer);
-		chat.WriteString(getIPInfo(2));
+		chat.WriteString(serverPort);
 		chat.WriteString(timeBuffer);
 		chat.WriteString(clientName);
 		chat.WriteString(team);
@@ -439,6 +505,7 @@ stock void ForwardToClient(int short = 256, const char[] command = "", int clien
 		chat.Close();
 	}
 }
+
 stock bool IsValidClient(client, bool:replaycheck = true)
 {
 	if (client <= 0 || client > MaxClients)
