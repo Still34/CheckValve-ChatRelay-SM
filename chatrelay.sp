@@ -1,13 +1,13 @@
 /*
-	Based on Arkarr's Cross Server Chat
-	Written in 1.7 SM Syntax 
-	(Socket parts cannot be written in 1.7 syntax last tried, so no enforcing for now.)
-*/
-
-/*
 ==================================================================================================================
 CHANGELOG
 	
+	v1.0.8rel
+	+ Added port check between 27000 to 27050, the ports are reserved for Source games in general.
+	+ Added a status command, along with override 'sm_checkvalve_admin', default permission is ADMFLAG_RCON.
+	* Minor message changes.
+	* Fixed RemoveArray stuff.
+
 	v1.0.7rel
 	* Revamped ForwardToClient code (Thanks David)
 
@@ -42,7 +42,7 @@ CHANGELOG
 ==================================================================================================================
 TO-DO
 
-	* Figure out how to make the short size dynamic
+	* [V] Figure out how to make the short size dynamic (Fixed in 1.0.7rel)
 	* Implement heartbeat check
 	* Implement max client
 	* Add disconnection reason to the disconnect message
@@ -59,7 +59,7 @@ TO-DO
 #include <bytebuffer>
 #include <smlib>
 #define PLUGIN_AUTHOR "Still / 341464"
-#define PLUGIN_VERSION "1.0.7rel"
+#define PLUGIN_VERSION "1.0.8rel"
 
 #define PTYPE_IDENTITY_STRING 0x00
 #define PTYPE_HEARTBEAT 0x01
@@ -103,6 +103,12 @@ stock const char IgnoreCommands[][] =  {
 	"!", 
 	"rtd"
 };
+
+/*
+======================
+Plugin startup & hooks
+======================
+*/
 public void OnPluginStart()
 {
 	g_ConnectionPort = CreateConVar("sm_checkvalve_port", "23456", "Port to send & listen to client messages.", FCVAR_PROTECTED | FCVAR_PRINTABLEONLY, true, 2000.0, true, 65565.0);
@@ -123,6 +129,7 @@ public void OnPluginStart()
 	//HookConVarChange(g_ConnectionLimit, OnConVarChange);
 	AutoExecConfig(true, "CheckValve.ChatRelay");
 	CreateServer();
+	RegConsoleCmd("sm_checkvalve_status", Command_Status, "Check chat relay server status.");
 	//ARRAY_Connections = CreateArray(g_ConnectionLimit.IntValue);
 	ARRAY_Connections = CreateArray();
 	ARRAY_ConnectionsIP = CreateArray();
@@ -139,10 +146,9 @@ public void OnPluginEnd()
 	CloseHandle(serverSocket);
 	serverSocket = INVALID_HANDLE;
 }
-//Might make a global convar hook using server_cvar event
 public void OnConVarChange(Handle convar, const char[] oldValue, const char[] newValue)
 {
-	if (GetArraySize(ARRAY_Connections) != 0)
+	if (GetArraySize(ARRAY_Connections) >= 1)
 	{
 		char cvarName[64];
 		char buffer[192];
@@ -170,18 +176,69 @@ public Action Event_PlayerDeath(Event event, const char[] name, bool dontBroadca
 	}
 	return Plugin_Continue;
 }
+
+
+/*
+======================
+Command callbacks
+======================
+*/
+public Action Command_Status(int client, int args)
+{
+	if (CheckCommandAccess(client, "sm_checkvalve_admin", ADMFLAG_RCON))
+	{
+		if(GetArraySize(ARRAY_Connections) >= 1)
+		{
+			int clientCount;
+			for (int i = 0; i < GetArraySize(ARRAY_Connections); i++)
+			{
+				clientCount++;
+			}
+			ReplyToCommand(client, "===========");
+			CReplyToCommand(client, "{white}Connection count: {orange}%i", clientCount);
+			CReplyToCommand(client, "{white}Port number: {red}%i", g_ConnectionPort.IntValue);
+			ReplyToCommand(client, "===========");
+		}
+		else
+		{
+			CReplyToCommand(client, "{green}[SM]{red} No admins{white} are connected to the relay server!");
+		}
+	}
+	else
+	{
+		ReplyToCommand(client, "[SM] Insufficient permission.");
+	}
+	return Plugin_Handled;
+}
+
+
+/*
+======================
+Core server functions
+======================
+*/
 public void CreateServer()
 {
 	if (serverSocket == INVALID_HANDLE)
 	{
-		serverSocket = SocketCreate(SOCKET_TCP, OnServerSocketError);
-		SocketBind(serverSocket, "0.0.0.0", g_ConnectionPort.IntValue); //Listen everything
-		SocketListen(serverSocket, OnSocketIncoming);
-		PrintToServer("============================");
-		PrintToServer("|Chat Relay server up!|");
-		PrintToServer("|Port: %i|", g_ConnectionPort.IntValue);
-		//PrintToServer("|Maximum client allowed: %i|", g_ConnectionLimit.IntValue);
-		PrintToServer("============================");
+		if (g_ConnectionPort.IntValue >= 27000 &&  g_ConnectionPort.IntValue <= 27050)
+		{
+			PrintToServer("==========================================================");
+			PrintToServer("Port value must not be anywhere between 27000 to 27050!!!!");
+			PrintToServer("==========================================================");
+			LogError("Please change the port within the CheckValve Relay config. Value between 27000~27050 is not allowed.");
+		}
+		else
+		{
+			serverSocket = SocketCreate(SOCKET_TCP, OnServerSocketError);
+			SocketBind(serverSocket, "0.0.0.0", g_ConnectionPort.IntValue); //Listen everything
+			SocketListen(serverSocket, OnSocketIncoming);
+			PrintToServer("============================");
+			PrintToServer("|Chat Relay server up!|");
+			PrintToServer("|Port: %i|", g_ConnectionPort.IntValue);
+			//PrintToServer("|Maximum client allowed: %i|", g_ConnectionLimit.IntValue);
+			PrintToServer("============================");
+		}
 	}
 }
 public OnServerSocketError(Handle socket, const int errorType, const int errorNum, any arg)
@@ -189,11 +246,11 @@ public OnServerSocketError(Handle socket, const int errorType, const int errorNu
 	int index = FindValueInArray(ARRAY_Connections, socket);
 	if (errorType == 6)
 	{
-		PrintToServer("Lost connection to client %d!", index);
+		PrintToServer("[CheckValve] Lost connection to client %d!", index);
 	}
 	else
 	{
-		LogError("Unexpected socket error %d (errno %d)", errorType, errorNum);
+		LogError("[CheckValve] Unexpected socket error %d (errno %d)", errorType, errorNum);
 	}
 	if (index != -1)
 	{
@@ -204,7 +261,7 @@ public OnServerSocketError(Handle socket, const int errorType, const int errorNu
 }
 public OnChildSocketDisconnected(Handle socket, any hFile)
 {
-	PrintToServer("Lost connection to client");
+	PrintToServer("[CheckValve] Lost connection to client");
 	int index = FindValueInArray(ARRAY_Connections, socket);
 	if (index != -1)
 	{
@@ -215,7 +272,7 @@ public OnChildSocketDisconnected(Handle socket, any hFile)
 }
 public OnSocketIncoming(Handle socket, Handle newSocket, const char[] remoteIP, int remotePort, any arg)
 {
-	PrintToServer("Connection detected! (%s:%d)", remoteIP, remotePort);
+	PrintToServer("[CheckValve] Connection detected! (%s:%d)", remoteIP, remotePort);
 	SendIdentity(newSocket);
 	SocketSetReceiveCallback(newSocket, OnChildSocketReceive);
 	SocketSetDisconnectCallback(newSocket, OnChildSocketDisconnected);
@@ -236,7 +293,7 @@ public OnChildSocketReceive(Handle socket, const char[] receiveData, const int d
 	strcopy(client_key, sizeof(client_key), receiveData[9]);
 	if (strlen(client_key) == 0 || !StrEqual(client_key, server_key, true))
 	{
-		PrintToServer("Client has a different password!");
+		PrintToServer("[CheckValve] Client has a different password!");
 		status.WriteByte(PTYPE_CONNECTION_FAILURE);
 		status.WriteShort(sizeof(badPassword));
 		status.WriteString(badPassword);
@@ -258,7 +315,7 @@ public OnChildSocketReceive(Handle socket, const char[] receiveData, const int d
 			
 			if (StrEqual(client_Port, getIPInfo(2)))
 			{
-				PrintToServer("Accepting connection...");
+				PrintToServer("[CheckValve] Accepting connection...");
 				if (g_ConnectionAnnounce.BoolValue == true) {CPrintToChatAll("{blue}[ChatRelay]{orange} An admin {white}has connnected to the chat server.");}
 				status.WriteByte(PTYPE_CONNECTION_SUCCESS);
 				status.WriteShort(sizeof(success));
@@ -266,7 +323,7 @@ public OnChildSocketReceive(Handle socket, const char[] receiveData, const int d
 			}
 			else
 			{
-				PrintToServer("Client requested a different server port!");
+				PrintToServer("[CheckValve] Client requested a different server port!");
 				status.WriteByte(PTYPE_CONNECTION_FAILURE);
 				status.WriteShort(sizeof(badPort));
 				status.WriteString(badPort);
@@ -275,7 +332,7 @@ public OnChildSocketReceive(Handle socket, const char[] receiveData, const int d
 		}
 		else
 		{
-			PrintToServer("Client requested a different server IP!");
+			PrintToServer("[CheckValve] Client requested a different server IP!");
 			status.WriteByte(PTYPE_CONNECTION_FAILURE);
 			status.WriteShort(sizeof(badIP));
 			status.WriteString(badIP);
@@ -289,17 +346,23 @@ public OnChildSocketReceive(Handle socket, const char[] receiveData, const int d
 	status.Close();
 	if (err)
 	{
+		PrintToServer("[CheckValve] Error occurred, kicking client...");
 		int index = FindValueInArray(ARRAY_Connections, socket);
+		int indexIP = FindValueInArray(ARRAY_ConnectionsIP, socket);
 		if (index != -1)
 		{
 			RemoveFromArray(ARRAY_Connections, index);
-			RemoveFromArray(ARRAY_ConnectionsIP, index);
+			RemoveFromArray(ARRAY_ConnectionsIP, indexIP);
 		}
 		CloseHandle(socket);
-		PrintToServer("Kicked client off!");
 	}
 }
 
+/*
+===========
+Misc stuff
+===========
+*/
 public void OnClientAuthorized(int client, const char[] auth)
 {
 	if (g_ConnectionNotify.BoolValue == true)
@@ -337,7 +400,7 @@ public void OnClientSayCommand_Post(int client, const char[] command, const char
 		}
 		else
 		{
-			Format(teamBuffer, sizeof(teamBuffer), "Yourself");
+			Format(teamBuffer, sizeof(teamBuffer), "Console");
 		}
 		ForwardToClient(command, client, teamBuffer, sArgs);
 	}
@@ -402,46 +465,6 @@ stock void SendIdentity(Handle socket)
 	ident.Close();
 }
 
-
-//short is again, yet to be determined
-// stock void ForwardToClient(int short = 256, const char[] command = "", int client, char[] team = "", const char[] msg)
-// {
-// 	int teamOrNot = 0x01;
-// 	if (StrContains(command, "say_team", false)) { teamOrNot = 0x00; }
-// 	char clientName[MAX_NAME_LENGTH];
-// 	char timeBuffer[32];
-// 	char ipBuffer[16];
-// 	if (client >= 1)
-// 	{
-// 		GetClientName(client, clientName, sizeof(clientName));
-// 	}
-// 	else
-// 	{
-// 		Format(clientName, sizeof(clientName), "Console");
-// 	}
-// 	FormatTime(timeBuffer, sizeof(timeBuffer), "%m/%d/%Y - %H:%M:%S");
-// 	for (int i = 0; i < GetArraySize(ARRAY_Connections); i++)
-// 	{
-// 		Handle clientSocket = GetArrayCell(ARRAY_Connections, i);
-// 		ByteBuffer chat = CreateByteBuffer(true, out, sizeof(out));
-// 		chat.WriteInt(0xFFFFFFFF);
-// 		chat.WriteByte(PTYPE_MESSAGE_DATA);
-// 		chat.WriteShort(short);
-// 		chat.WriteByte(0x01);
-// 		chat.WriteInt(GetTime());
-// 		chat.WriteByte(teamOrNot);
-// 		GetArrayString(ARRAY_ConnectionsIP, i, ipBuffer, sizeof(ipBuffer));
-// 		chat.WriteString(ipBuffer);
-// 		chat.WriteString(getIPInfo(2));
-// 		chat.WriteString(timeBuffer);
-// 		chat.WriteString(clientName);
-// 		chat.WriteString(team);
-// 		chat.WriteString(msg);
-// 		out_size = chat.Dump(out, sizeof(out));
-// 		SocketSend(clientSocket, out, out_size);
-// 		chat.Close();
-// 	}
-// }
 stock void ForwardToClient(const char[] command = "", int client, char[] team = "", const char[] msg)
 {
 	int teamOrNot = 0x01;
